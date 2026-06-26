@@ -64,16 +64,21 @@ recall@k (exact vs approximate), and the crossover where masking beats brute for
    first-class metric (it upper-bounds the filter).
 6. **Statistics** — per-relation CIs, paired bootstrap significance for RRF-vs-BM25 (close at top-20
    for zero-shot DPR).
-7. **Fusion ablations** — `K_NN`, `K_CAND`, RRF constant, exact-match bonus (invisible at our cutoffs
-   so far — justify or drop); compare RRF vs convex combination vs learned fusion (see Bruch below).
+7. **Fusion ablations** — per Bruch et al. (below), make **convex combination of normalized scores
+   the primary fusion** and treat RRF as a baseline; ablate `K_NN`, `K_CAND`, the RRF constant, and
+   the exact-match bonus (invisible at our cutoffs so far — justify or drop), plus score-normalization
+   choices and a learned fusion.
 
 ## Related work to position against (do the lit review first)
 
-- **Bruch et al. — analysis of hybrid (lexical–semantic) search / fusion.** Most directly relevant
-  to our fusion: theoretical and empirical analysis of fusion functions (RRF vs convex combination,
-  score normalization, the conditions under which hybrid helps). Our RRF choice and any learned-fusion
-  ablation must be framed against this; also Bruch's *Foundations of Vector Retrieval* for the
-  retrieval-systems framing that the CUDA kernel slots into.
+- **Bruch, Gai & Ingber, "An Analysis of Fusion Functions for Hybrid Retrieval"**
+  (arXiv [2210.11934](https://arxiv.org/abs/2210.11934), ECIR 2023). The key reference for our
+  fusion step, and it has a direct implication: they find **convex combination (CC) of normalized
+  scores outperforms RRF**, that **RRF is parameter-sensitive**, and that CC is robust to score
+  normalization and tunes a single parameter with little data. This is a flag on our current setup —
+  we used RRF with a hand-set constant (`c=60`) and an exact-match bonus, i.e. exactly the
+  parameter-sensitivity they critique. **Action: make CC the primary fusion and treat RRF as a
+  baseline** (see experiment #7).
 - **SPAR / Salient-Phrase-Aware Dense Retrieval** — teaches dense models lexical matching; closest in
   spirit to "give DPR lexical/entity precision."
 - **EntityQuestions** (Sciavolino et al., 2021) — already diagnoses tail-entity failure; our delta

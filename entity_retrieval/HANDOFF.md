@@ -21,9 +21,10 @@ application of that diagnosis.
 **A literature review to locate the novelty delta.** The method — lexical/entity filter + dense
 rank + hybrid fusion — is intuitive and sits next to a lot of prior work. If you skip this you risk
 building something already published. Specifically check and position against:
-- **Bruch et al. on hybrid lexical–semantic retrieval** — the analysis of fusion functions (RRF vs
-  convex combination, score normalization) that our RRF and any learned-fusion ablation must be
-  framed against; plus *Foundations of Vector Retrieval* for the systems framing. See [`TODO.md`](TODO.md).
+- **Bruch, Gai & Ingber, "An Analysis of Fusion Functions for Hybrid Retrieval"**
+  (arXiv [2210.11934](https://arxiv.org/abs/2210.11934)) — finds convex combination of normalized
+  scores beats RRF and that RRF is parameter-sensitive; implies we should make CC our primary fusion
+  and demote RRF to a baseline. See [`TODO.md`](TODO.md).
 - The EntityQuestions paper itself (Sciavolino et al., 2021) — it already diagnoses the tail-entity
   failure; your delta must be sharper than "we confirmed it."
 - **SPAR / "Salient Phrase Aware Dense Retrieval"** (Chen et al.) — teaches dense retrievers lexical
