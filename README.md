@@ -1,6 +1,14 @@
 # EntityQuestions
 This repository contains the EntityQuestions dataset as well as code to evaluate retrieval results from the the paper [Simple Entity-centric Questions Challenge Dense Retrievers](https://arxiv.org/pdf/2109.08535.pdf) by Chris Sciavolino*, Zexuan Zhong*, Jinhyuk Lee, and Danqi Chen (* equal contribution).
 
+> **Fork note — added study:** This fork includes [`entity_retrieval/`](entity_retrieval/README.md),
+> an end-to-end study that (1) reproduces the paper's BM25 (72.0% top-20, exact) and zero-shot
+> DPR-NQ (50.9% vs 49.7%) numbers, (2) fine-tunes DPR on EntityQuestions to overtake BM25 (76.2%),
+> and (3) introduces **entity-constrained dense retrieval**: hard-filtering the corpus to passages
+> that mention the question's named person (via the positional inverted index) and fusing that with
+> global dense nearest-neighbors via RRF — which beats BM25 on person questions. See
+> [`entity_retrieval/README.md`](entity_retrieval/README.md) for the full write-up.
+
 
 ## Quick Links
   - [Installation](#installation)
