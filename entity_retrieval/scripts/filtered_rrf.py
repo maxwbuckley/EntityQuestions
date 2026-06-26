@@ -73,14 +73,19 @@ N = Qsub.shape[0]
 best = torch.full((N, K_NN), float("-inf"), device=dev, dtype=torch.float16)
 bidx = torch.full((N, K_NN), -1, device=dev, dtype=torch.int64)
 offset = 0; all_pids = []; t0 = time.time()
+QB = int(os.environ.get("QB", 1024))                        # tile queries to bound GPU memory
 for i in range(22):
     emb = torch.from_numpy(np.load(f"{EMB_DIR}/emb_{i:03d}.npy")).to(dev).half()
-    all_pids.extend(json.load(open(f"{EMB_DIR}/pids_{i:03d}.json")))
-    sc = Qsub @ emb.t()                                     # (N, ns)
-    v, idx = sc.topk(min(K_NN, sc.shape[1]), dim=1)
-    cs = torch.cat([best, v], 1); cg = torch.cat([bidx, idx + offset], 1)
-    nv, ni = cs.topk(K_NN, dim=1)
-    best = nv; bidx = torch.gather(cg, 1, ni); offset += emb.shape[0]
+    pids_i = json.load(open(f"{EMB_DIR}/pids_{i:03d}.json"))
+    embT = emb.t().contiguous()
+    for qs in range(0, N, QB):                              # (qb, ns) score tile, not (N, ns)
+        sc = Qsub[qs:qs+QB] @ embT
+        v, idx = sc.topk(min(K_NN, sc.shape[1]), dim=1)
+        cs = torch.cat([best[qs:qs+QB], v], 1); cg = torch.cat([bidx[qs:qs+QB], idx + offset], 1)
+        nv, ni = cs.topk(K_NN, dim=1)
+        best[qs:qs+QB] = nv; bidx[qs:qs+QB] = torch.gather(cg, 1, ni)
+    all_pids.extend(pids_i); offset += len(pids_i)
+    del emb, embT
 all_pids = np.array(all_pids)
 nn_pids = all_pids[bidx.cpu().numpy()]                       # (N, K_NN) pid strings
 print(f"global NN computed in {time.time()-t0:.0f}s")

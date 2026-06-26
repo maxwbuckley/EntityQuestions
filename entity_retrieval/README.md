@@ -1,4 +1,4 @@
-# Entity-Centric Retrieval: Reproducing EntityQuestions and Beating BM25 with Entity-Constrained Dense Fusion
+# Entity-Centric Retrieval: Reproducing EntityQuestions and Beating BM25 with Entity-Constrained Deep Hybrid Retrieval
 
 This directory documents an end-to-end study built on top of the
 [EntityQuestions](https://arxiv.org/pdf/2109.08535.pdf) dataset (Sciavolino et al., EMNLP 2021).
@@ -53,10 +53,15 @@ on a single RTX 5090.
 
 ```
 entity_retrieval/
-  README.md            <- this file (the narrative)
+  README.md            <- this file (the narrative: what we did and why)
+  TODO.md              <- roadmap: target paper "Deep Hybrid GPU Retrieval", the fused CUDA
+                          kernel, dataset plan (PopQA/BEIR/...), prioritized experiments
+  HANDOFF.md           <- orientation for a researcher picking this up cold + threats to validity
   scripts/             <- every script we ran, in order of the story below
   results/             <- saved metric JSONs
 ```
+
+**Picking this up to write a paper?** Start with [`HANDOFF.md`](HANDOFF.md) then [`TODO.md`](TODO.md).
 
 The scripts use two path placeholders you must set to reproduce:
 - `${WORKDIR}` / `WORKDIR` — a scratch dir with ~100 GB free (corpus, index, embeddings live here)
@@ -260,11 +265,38 @@ removes near-miss distractors the dense model would otherwise rank highly.
 > Full 10,757-question results for both DPR-NQ and DPR-ft are produced by
 > `scripts/filtered_rrf.py 0 nq` and `... 0 ft` and saved to `results/rrf_*_full_results.json`.
 _The 300-sample above is one easy relation (P106) and overstates the name-filter; the full-subset
-numbers below are the ones to trust._
+numbers below (all 10,757 person questions) are the ones to trust._
 
-**⏳ Full-subset (10,757 person questions) table pending** — being computed for both DPR-NQ and
-DPR-ft and will be added in a follow-up commit. Reproduce with `scripts/filtered_rrf.py 0 nq` and
-`scripts/filtered_rrf.py 0 ft` (outputs to `results/rrf_{nq,ft}_full_results.json`).
+**Full person subset (N=10,757), DPR-NQ embeddings:**
+
+| System | top-1 | top-5 | top-20 | top-100 |
+|---|---|---|---|---|
+| BM25 | 41.2 | 59.8 | 71.2 | 80.2 |
+| DPR-NQ full | 15.1 | 28.2 | 41.1 | 58.0 |
+| DPR-NQ name-filtered | 35.3 | 57.4 | 65.8 | 68.7 |
+| **DPR-NQ + RRF** | 37.7 | 60.4 | **72.7** | **81.9** |
+
+**Full person subset (N=10,757), fine-tuned DPR embeddings:**
+
+| System | top-1 | top-5 | top-20 | top-100 |
+|---|---|---|---|---|
+| BM25 | 41.2 | 59.8 | 71.2 | 80.2 |
+| DPR-ft full | 47.9 | 63.8 | 75.0 | 84.3 |
+| DPR-ft name-filtered | 55.0 | 64.9 | 67.8 | 69.0 |
+| **DPR-ft + RRF** | **60.0** | **74.5** | **82.4** | **88.5** |
+
+**Takeaways that survive the full subset:**
+- **RRF beats BM25 even with zero-shot DPR** (72.7 vs 71.2 top-20; 81.9 vs 80.2 top-100) — the
+  global-NN arm rescues the ~12.7% zero-candidate questions that sink the name-filter alone (65.8).
+- **With fine-tuned DPR, RRF dominates everything** — 82.4 top-20 (+11.2 over BM25), best at every k.
+- **The name filter contributes precision the dense model lacks:** at top-1 it beats full dense
+  retrieval for both encoders (NQ 15.1→35.3; ft 47.9→55.0), and the fusion improves on both
+  (ft top-1: full 47.9 → filtered 55.0 → fused 60.0).
+- Numbers are lower than the P106-only 300-sample (e.g. ft top-20 92.3 → 82.4), as expected — but
+  the ordering (RRF > full > name-filter, RRF > BM25) is unchanged.
+- Diacritic folding moved the zero-candidate rate only 12.9%→12.7% on the full set: the residual is
+  dominated by GLiNER false-positive "names" and non-diacritic name-form mismatches, not accents.
+  See `HANDOFF.md` for why this matters and what to do about it.
 
 ---
 

@@ -1,0 +1,95 @@
+# Handoff: where this could go, and the landmines
+
+This note is for a researcher picking up the [`entity_retrieval/`](README.md) thread cold. It is
+deliberately honest about what is **not** done. Read the [README](README.md) first for the results;
+this is the "what next and what to watch out for" map. The actionable roadmap (target paper
+*Deep Hybrid GPU Retrieval*, the fused CUDA kernel, the dataset list) lives in [`TODO.md`](TODO.md).
+
+## One-paragraph summary of the finding
+
+On entity questions, dense retrieval (DPR) underperforms BM25 mainly because it **fails to retrieve
+the right entity's passages out of 21M**, not because it ranks badly. If you hard-constrain the
+candidate set to passages that *mention the named entity* (via the positional inverted index) and
+then rank with DPR, dense ranking is suddenly good. Fusing that entity-constrained list with the
+global dense nearest-neighbors via RRF beats BM25 on person questions — modestly with zero-shot DPR
+(top-20 72.7 vs 71.2) and clearly with fine-tuned DPR (82.4 vs 71.2). The cleanest, most defensible
+contribution is the **diagnosis** (retrieval-failure vs ranking-failure); the method is the
+application of that diagnosis.
+
+## Do this FIRST (before running anything else)
+
+**A literature review to locate the novelty delta.** The method — lexical/entity filter + dense
+rank + hybrid fusion — is intuitive and sits next to a lot of prior work. If you skip this you risk
+building something already published. Specifically check and position against:
+- **Bruch et al. on hybrid lexical–semantic retrieval** — the analysis of fusion functions (RRF vs
+  convex combination, score normalization) that our RRF and any learned-fusion ablation must be
+  framed against; plus *Foundations of Vector Retrieval* for the systems framing. See [`TODO.md`](TODO.md).
+- The EntityQuestions paper itself (Sciavolino et al., 2021) — it already diagnoses the tail-entity
+  failure; your delta must be sharper than "we confirmed it."
+- **SPAR / "Salient Phrase Aware Dense Retrieval"** (Chen et al.) — teaches dense retrievers lexical
+  matching; very close in spirit.
+- BM25⊕DPR **hybrid retrieval** baselines (this is the standard, and your #1 missing baseline below).
+- Autoregressive entity retrieval (**GENRE**), entity-linking-augmented retrieval, **Entities as
+  Experts**, ColBERT/late-interaction, and learned sparse (**SPLADE**) which already get lexical
+  precision "for free."
+
+If the novelty survives, the framing is likely **"a diagnosis + a cheap NER-gated hybrid that
+recovers it,"** not "a new retriever."
+
+## Prioritized experiment checklist
+
+1. **[CRITICAL] Generic hybrid baseline: BM25 ⊕ global-DPR RRF, with NO entity filter.**
+   Without this, a reviewer attributes all gains to ordinary hybrid retrieval, not the entity
+   constraint. This is the experiment that proves the entity filter adds value beyond hybridization.
+   It's cheap: you already have BM25 ranked lists (`${WORKDIR}/bm25_results/*.json`) and the global
+   DPR NN (computed inside `scripts/filtered_rrf.py`). Add it as a 6th system there: RRF-fuse the
+   BM25 top-k pids with the global-DPR top-k pids and evaluate identically. **Until this is run, the
+   headline claim is not defensible.**
+2. **Generalize beyond persons.** We only filtered on people. GLiNER detects orgs/locations/works
+   too; rerun `run_gliner_large.py` with labels `["person","organization","location"]` and extend
+   the filter+fusion to all named entities. A method that only works for people is a workshop paper;
+   one that works for any entity is a conference paper.
+3. **A second dataset / corpus.** Everything is EntityQuestions + `psgs_w100`. Add at least one of
+   NQ / TriviaQA / WebQuestions (same corpus, different queries) to show it isn't EntityQuestions-
+   specific. Re-using the existing index + embeddings makes this cheap.
+4. **Downstream QA, not just recall.** Feed top-k passages to a reader / LLM and measure answer
+   accuracy. Reviewers increasingly require this; better recall@k that doesn't move answers is weak.
+5. **Fix the entity-mention step (the 12.7% zero-candidate tail).** Folding diacritics barely helped
+   (12.9%→12.7%); the residual is GLiNER false-positives (e.g. "Positive K", "Staedtler") and
+   non-diacritic name-form mismatches (regnal names, partial names, aliases). Try: entity *linking*
+   instead of string match, alias tables (Wikidata), or relaxed token-subset matching. Report the
+   entity-mention recall as a first-class metric — it upper-bounds the name-filter.
+6. **Statistical rigor.** Single runs only. Add per-relation breakdowns with CIs and a significance
+   test (e.g. paired bootstrap over questions) for RRF-vs-BM25, which is close at top-20 for NQ.
+7. **Ablate RRF.** Vary `K_NN`, `K_CAND`, the RRF constant (c=60), and the exact-match bonus; the
+   bonus was invisible at our cutoffs so either justify it or drop it. Compare RRF to learned fusion.
+
+## Threats to validity (state these in any draft)
+
+- **Distant-supervision training data** for fine-tuned DPR is our construction (BM25 positives +
+  hard negatives), not the paper's exact Table 2 setup. The 76.2% reproduces the *finding*, not a
+  bit-exact number.
+- **The 300-sample is all P106** (occupation) and inflates the name-filter; always cite the
+  full-subset numbers (README §6b).
+- **Throughput numbers are observed, not benchmarked** (no warmup/replication); don't put them in a
+  systems claim without re-measuring properly.
+- **Exact-substring entity matching is brittle** and the candidate cap (`K_CAND`) trades recall
+  ceiling for speed — quantify the impact (we argued it's negligible because the subject's passages
+  rank top of the name query, but verify).
+
+## How to reproduce / extend (quickstart)
+
+Set `WORKDIR` (≥100 GB free) and `REPO` (this clone), `JAVA_HOME` (JDK 11+/21). Then, in order:
+`scripts/run_gliner_large.py` → build corpus + BM25 index (`bm25/build_bm25_ctx_passages.py` +
+`pyserini.index.lucene`) → `scripts/encode_passages.py`/`encode_questions.py` →
+`scripts/dense_search.py`/`dense_eval.py` → `scripts/build_train_data.py`/`train_dpr.py` →
+`scripts/fold_shards.py` (folded index) → `scripts/filtered_rrf.py 0 {nq,ft}`. The `*_driver.sh`
+wrappers chain the long stages. Watch memory: `filtered_rrf.py` tiles the global-NN matmul (`QB`)
+and caps candidates (`K_CAND`) — do **not** run two full instances in parallel (it will exhaust GPU
+memory; we learned this the hard way).
+
+## Lowest-effort, highest-value next step
+
+Run experiment #1 (generic hybrid baseline). It's ~15 min of compute, reuses everything, and it is
+the difference between "RRF beats BM25" (already known) and "the *entity constraint* beats hybrid
+RRF" (the actual claim). If that holds, you have a paper spine; if it doesn't, you've saved months.
