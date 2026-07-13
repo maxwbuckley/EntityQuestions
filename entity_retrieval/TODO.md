@@ -7,11 +7,14 @@ This is the actionable roadmap. For orientation and threats-to-validity see
 
 ## Thesis (two contributions)
 
-1. **Diagnosis + method (done in prototype).** DPR's weakness on entity questions is a *retrieval*
-   failure, not a *ranking* failure. Hard-constraining candidates to passages that mention the
-   query's named entity (positional inverted index) and fusing the entity-filtered dense ranking
-   with the global dense nearest-neighbors via RRF beats BM25 on person questions — modestly with
-   zero-shot DPR (top-20 72.7 vs 71.2), clearly with fine-tuned DPR (82.4 vs 71.2).
+1. **Diagnosis (solid) + method (needs care after §7).** DPR's weakness on entity questions is a
+   *retrieval* failure, not a *ranking* failure (§5). Hard-constraining candidates to passages that
+   mention the query's named entity and fusing with global dense NN beats BM25 on person questions
+   (fine-tuned DPR 82.8 vs 71.2 top-20). **But §7's critical baseline shows a plain BM25⊕DPR hybrid
+   with no entity filter already reaches 82.0** — so on the fine-tuned encoder the entity constraint
+   adds only a low-k precision edge (+1.9 top-1), not the bulk of the gain. The live question (now
+   the paper's crux) is whether the entity constraint pays off *more* on a weak/zero-shot encoder;
+   see experiment #1's NEW CRUX below.
 2. **Systems contribution (to build): a fused CUDA kernel** that makes hybrid entity-filtered
    retrieval a single GEMM. See below — this is the paper's novelty engine.
 
@@ -47,10 +50,18 @@ recall@k (exact vs approximate), and the crossover where masking beats brute for
 
 ## Experiments (prioritized)
 
-1. **[CRITICAL] Generic hybrid baseline: BM25 ⊕ global-DPR RRF, NO entity filter.** Proves the
-   *entity constraint* adds value beyond ordinary hybridization. Cheap — reuse `bm25_results/` ranked
-   lists + the global DPR NN already in `filtered_rrf.py`; add as a 6th system. Until this is run the
-   headline claim is not defensible.
+1. **[DONE — and it reshapes the paper] Generic hybrid baseline: BM25 ⊕ global-DPR, no entity filter.**
+   Run in §7 (`scripts/hybrid_fusion.py`, fine-tuned encoder, full person subset). **Result: the plain
+   hybrid already gets 82.0 top-20 (BM25 71.2 → 82.0); the entity-constrained fusion gets 82.8 — only
+   +0.8.** So on the fine-tuned encoder the entity constraint is *not* the main driver — hybridization
+   is — and the filter's real value is a low-k precision edge (+1.9 top-1, +1.8 top-5). This is exactly
+   the "saved you months" outcome flagged here: the headline is now the diagnosis + a precision edge,
+   not "entity filtering beats BM25."
+   - **[NEW CRUX] Rerun §7's table on the ZERO-SHOT NQ encoder.** The entity filter should help far more
+     when the dense arm is weak on entities (NQ global DPR was 41.1 top-20 vs ft's 74.7). Hypothesis:
+     *the entity constraint's marginal value is inversely related to the encoder's entity competence* —
+     large when you can't fine-tune, small once you can. This is now the paper's central claim to nail.
+     One command once the NQ passages are (re-)encoded: `hybrid_fusion.py 0 nq`.
 2. **Generalize beyond persons** to orgs/locations/works (GLiNER already detects them; rerun
    `run_gliner_large.py` with more labels and extend the bitset filter to any named entity).
 3. **More datasets / benchmarks:**
@@ -64,10 +75,13 @@ recall@k (exact vs approximate), and the crossover where masking beats brute for
    first-class metric (it upper-bounds the filter).
 6. **Statistics** — per-relation CIs, paired bootstrap significance for RRF-vs-BM25 (close at top-20
    for zero-shot DPR).
-7. **Fusion ablations** — per Bruch et al. (below), make **convex combination of normalized scores
-   the primary fusion** and treat RRF as a baseline; ablate `K_NN`, `K_CAND`, the RRF constant, and
-   the exact-match bonus (invisible at our cutoffs so far — justify or drop), plus score-normalization
-   choices and a learned fusion.
+7. **Fusion ablations** — convex combination (min-max normalized) is now implemented and swept in §7.
+   **Finding so far: on this data RRF ≥ CC** (generic 82.0 vs 81.9, entity 82.8 vs 82.2 top-20), and
+   CC's best α≈0.5 — *not* Bruch's 0.8 default (which gives ~78 here). So Bruch's "CC > RRF" does not
+   transfer to this entity-QA + fine-tuned-dense setting; report this as a data point rather than
+   adopting CC as primary. Remaining: tune α on a held-out split (we tuned on the eval subset — an
+   oracle upper bound), ablate `K_NN`/`K_CAND`/η and the exact-match bonus, try a learned fusion, and
+   check whether CC overtakes RRF on the weak NQ encoder (experiment #1's NEW CRUX).
 
 ## Related work to position against (do the lit review first)
 

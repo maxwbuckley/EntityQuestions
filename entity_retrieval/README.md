@@ -16,6 +16,12 @@ those with DPR vectors, and fuse that with global dense nearest-neighbors via Re
 Fusion (RRF), you get a retriever that **decisively beats BM25** on person questions — especially
 when the dense encoder is fine-tuned in-domain.
 
+> **Read §7 before quoting the headline.** A later, critical baseline (§7) shows that on the
+> fine-tuned encoder a *plain* BM25⊕DPR hybrid with **no entity filter** already reaches 82.0 top-20 —
+> so most of the gain over BM25 is ordinary hybridization, and the entity constraint adds a smaller,
+> low-k precision edge (+1.9 top-1, +0.8 top-20) rather than being the main driver. The honest
+> contribution is the **diagnosis** (§5) plus that precision edge, not "entity filtering beats BM25."
+
 Everything here was run against the real DPR Wikipedia corpus (`psgs_w100`, 21,015,324 passages)
 on a single RTX 5090.
 
@@ -289,6 +295,9 @@ numbers below (all 10,757 person questions) are the ones to trust._
 - **RRF beats BM25 even with zero-shot DPR** (72.7 vs 71.2 top-20; 81.9 vs 80.2 top-100) — the
   global-NN arm rescues the ~12.7% zero-candidate questions that sink the name-filter alone (65.8).
 - **With fine-tuned DPR, RRF dominates everything** — 82.4 top-20 (+11.2 over BM25), best at every k.
+  _(But see §7: a plain BM25⊕DPR hybrid with no entity filter also reaches ~82 top-20, so most of that
+  +11.2 is hybridization, not the entity constraint. The entity filter's real contribution is a low-k
+  precision edge.)_
 - **The name filter contributes precision the dense model lacks:** at top-1 it beats full dense
   retrieval for both encoders (NQ 15.1→35.3; ft 47.9→55.0), and the fusion improves on both
   (ft top-1: full 47.9 → filtered 55.0 → fused 60.0).
@@ -297,6 +306,87 @@ numbers below (all 10,757 person questions) are the ones to trust._
 - Diacritic folding moved the zero-candidate rate only 12.9%→12.7% on the full set: the residual is
   dominated by GLiNER false-positive "names" and non-diacritic name-form mismatches, not accents.
   See `HANDOFF.md` for why this matters and what to do about it.
+
+---
+
+## 7. The critical baseline: is it the *entity constraint*, or just hybridization? (Bruch et al.)
+
+**Why this section exists.** Sections 5–6 fuse an entity-filtered dense list with global dense
+nearest-neighbors and beat BM25. But there is an obvious confound: **maybe any lexical⊕dense hybrid
+does that**, and the entity filter adds nothing beyond ordinary hybridization. The only way to know is
+to build the standard hybrid — BM25 ⊕ dense — and compare, *on the same encoder*. This is the
+experiment [`HANDOFF.md`](HANDOFF.md) flagged as **CRITICAL**: "until this is run the headline claim is
+not defensible." Here it is.
+
+The reference for hybrid fusion is **Bruch, Gai & Ingber, "An Analysis of Fusion Functions for Hybrid
+Retrieval"** (arXiv [2210.11934](https://arxiv.org/abs/2210.11934), ACM TOIS 2023). They fuse a lexical
+ranking (BM25) and a semantic ranking (dense) two ways:
+
+- **Reciprocal Rank Fusion (RRF):** `f = 1/(η + π_Lex) + 1/(η + π_Sem)` (rank-based; η=60).
+- **Convex Combination (CC):** `f = α·φ_Sem(s_Sem) + (1−α)·φ_Lex(s_Lex)`, where φ is per-query
+  **min-max normalization** `φ(s)=(s−m_q)/(M_q−m_q)` (their TM2C2 uses theoretical bounds: BM25 inf=0,
+  cosine inf=−1). Their findings: **CC > RRF in- and out-of-domain, RRF is η-sensitive, and CC is
+  normalization-agnostic and sample-efficient**, with α≈0.8 a good default.
+
+We add all of these, **computed on the single fine-tuned DPR encoder** so nothing is confounded by
+encoder differences (`scripts/hybrid_fusion.py`). For the two CC systems we sweep α∈{0.1,…,0.9} and
+report the best top-20 operating point (the full α-curve is logged).
+
+**Result — full person subset (N=10,758), fine-tuned DPR, one shared encoder:**
+
+| System | Fusion | Entity filter | top-1 | top-5 | top-20 | top-100 |
+|---|---|---|---|---|---|---|
+| BM25 | — | no | 41.2 | 59.8 | 71.2 | 80.2 |
+| BM25 + exact-boost | exact-match boost | lexical | 45.1 | 64.0 | 74.1 | 81.5 |
+| DPR-ft global | — | no | 47.9 | 64.2 | 74.7 | 84.2 |
+| DPR-ft name-filtered | — | yes | 54.6 | 65.5 | 68.9 | 70.2 |
+| **Hybrid RRF** (Bruch) | RRF | **no** | 57.7 | 73.3 | **82.0** | 88.4 |
+| **Hybrid CC** (Bruch, α\*=0.5) | convex comb. | **no** | 59.4 | 73.6 | 81.9 | 87.9 |
+| **Entity RRF** (ours, §6) | RRF | **yes** | 59.6 | 75.1 | **82.8** | 88.6 |
+| **Entity CC** (ours, α\*=0.5) | convex comb. | **yes** | 59.8 | 74.7 | 82.2 | 88.0 |
+
+**The honest headline: on the fine-tuned encoder, hybridization explains almost all of the gain over
+BM25, and the entity constraint adds only a small low-k edge.**
+
+- **Generic hybrid already gets 82.0 top-20** (BM25 71.2 → 82.0, **+10.8**), with *no entity filter at
+  all*. Our entity-constrained fusion gets 82.8 — a further **+0.8**. So the entity constraint is **not**
+  the main driver here; ordinary BM25⊕DPR hybridization is.
+- **Where the entity filter helps is precision (low k):** Entity-RRF − Hybrid-RRF is **+1.9 top-1,
+  +1.8 top-5, +0.8 top-20, +0.2 top-100.** The exact-entity constraint removes near-miss distractors at
+  the very top of the ranking; by top-100 the global dense arm already has recall covered, so the gap
+  closes. A real but modest *ranking-precision* effect, not a recall one.
+- **CC vs RRF (contra Bruch):** here **RRF ≥ CC** for both the generic and entity hybrids (82.0 vs 81.9;
+  82.8 vs 82.2). CC only matches RRF after tuning α down to ≈0.5 — Bruch's α=0.8 default is worse on this
+  data (top-20 ≈ 78; see the logged α-curve). Bruch established CC>RRF on web/BEIR retrieval; on this
+  narrow entity-QA distribution with a strong fine-tuned dense arm, rank-based RRF is at least as good
+  and CC's optimal mixing weight shifts toward the lexical/precision arm. The α-curve is flat near its
+  peak (0.4–0.6 within ~1 pt), so CC isn't fragile — it just doesn't win here.
+- **exact-match-boosted BM25** (a lexical-only entity signal) lifts BM25 71.2 → 74.1 top-20 and 41.2 →
+  45.1 top-1 — cheap and real, but far below any hybrid.
+
+**What this means (reframing).** The §6 claim "entity-constrained RRF beats BM25 (≈82 vs 71)" is *true*,
+but this baseline shows a plain hybrid gets there too — so the earlier framing credited the entity filter
+for gains that mostly belong to hybridization. The defensible contributions are now: **(1)** the
+diagnosis of §5 (DPR's entity weakness is retrieval-failure, not ranking-failure); **(2)** a plain
+BM25⊕DPR hybrid recovers most of it once the encoder is fine-tuned; **(3)** the entity constraint adds a
+small, consistent *low-k precision* gain on top.
+
+**The key open question this raises.** All of the above is on the **fine-tuned** encoder, whose global
+DPR is already strong on entities (74.7 top-20) — so the entity filter has little left to contribute
+because the dense model already finds the entity. On the **zero-shot NQ** encoder, global DPR was far
+weaker on this subset (41.1 top-20, §6b), so the entity filter should matter *much* more there. In other
+words **the entity constraint's marginal value is likely inversely related to the dense encoder's entity
+competence** — large when you can't fine-tune, small once you can. Testing that (the same table on the NQ
+encoder) is the obvious next run and is now the crux of the story rather than a footnote — see
+[`TODO.md`](TODO.md).
+
+> **Comparability note.** This table is one self-consistent run on a freshly fine-tuned encoder, so its
+> BM25 / DPR-full / name-filter / Entity-RRF cells differ by ≲1 pt from §6b (which used the original
+> checkpoint). §6b is kept as the previously-reported reference; this section is the fair head-to-head
+> (one encoder, all systems). CC's α is tuned on this same subset (an oracle upper bound; Bruch show one
+> held-out α transfers, so a clean split would cost little — flagged in `TODO.md`). Fusion tie-breaks
+> are Python hash-order dependent, so individual cells move ≤0.1 pt run-to-run (set `PYTHONHASHSEED`
+> for bit-exact repro); this doesn't affect any comparison here.
 
 ---
 
@@ -329,6 +419,7 @@ numbers below (all 10,757 person questions) are the ones to trust._
 | `filtered_dpr.py` | §5 | entity-constrained dense retrieval |
 | `fold_util.py`, `fold_shards.py` | §6 | diacritic folding + folded re-index |
 | `filtered_rrf.py` | §6 | RRF fusion (name-filter + global NN) with exact tie-break |
+| `hybrid_fusion.py` | §7 | generic hybrid (Bruch) + exact-boost + convex-combination vs RRF |
 | `*_driver.sh` | — | orchestration wrappers for the long-running stages |
 
 All numbers in this writeup were measured on the real 21M-passage `psgs_w100` corpus on one RTX 5090.

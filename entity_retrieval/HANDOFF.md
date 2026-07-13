@@ -39,13 +39,14 @@ recovers it,"** not "a new retriever."
 
 ## Prioritized experiment checklist
 
-1. **[CRITICAL] Generic hybrid baseline: BM25 ⊕ global-DPR RRF, with NO entity filter.**
-   Without this, a reviewer attributes all gains to ordinary hybrid retrieval, not the entity
-   constraint. This is the experiment that proves the entity filter adds value beyond hybridization.
-   It's cheap: you already have BM25 ranked lists (`${WORKDIR}/bm25_results/*.json`) and the global
-   DPR NN (computed inside `scripts/filtered_rrf.py`). Add it as a 6th system there: RRF-fuse the
-   BM25 top-k pids with the global-DPR top-k pids and evaluate identically. **Until this is run, the
-   headline claim is not defensible.**
+1. **[DONE — see README §7] Generic hybrid baseline: BM25 ⊕ global-DPR, NO entity filter.**
+   Run in `scripts/hybrid_fusion.py` (fine-tuned encoder, full person subset). **The plain hybrid
+   already gets 82.0 top-20; the entity-constrained fusion gets 82.8 (+0.8).** So on the fine-tuned
+   encoder the entity filter is *not* the main driver — hybridization is — and its real value is a
+   low-k precision edge (+1.9 top-1). The **new** highest-value experiment is the same table on the
+   **zero-shot NQ encoder**, where the dense arm is weak on entities (41.1 vs 74.7 top-20) and the
+   entity filter should help much more: `hybrid_fusion.py 0 nq` once NQ passages are re-encoded. That
+   comparison is now the paper's central claim.
 2. **Generalize beyond persons.** We only filtered on people. GLiNER detects orgs/locations/works
    too; rerun `run_gliner_large.py` with labels `["person","organization","location"]` and extend
    the filter+fusion to all named entities. A method that only works for people is a workshop paper;
@@ -80,7 +81,15 @@ recovers it,"** not "a new retriever."
 
 ## How to reproduce / extend (quickstart)
 
-Set `WORKDIR` (≥100 GB free) and `REPO` (this clone), `JAVA_HOME` (JDK 11+/21). Then, in order:
+> **Artifact persistence (learn from our mistake):** put `WORKDIR` on a **durable** disk, never in an
+> ephemeral/temp scratch dir. The first build wrote the corpus, both indexes, the 21M×2 embeddings,
+> and the fine-tuned checkpoint into a session scratchpad that got reaped between sessions — forcing a
+> full multi-hour regen. Only the git-tracked scripts/docs/metric-JSONs survived. The regen is
+> automated end-to-end by `scripts/master_driver.sh` (idempotent phase guards; the 2.2 h passage
+> encode is resumable by shard). Note the dataset itself is **not** in this repo — download the query
+> JSONs from `nlp.cs.princeton.edu/projects/entity-questions/dataset.zip` into `WORKDIR/dataset/`.
+
+Set `WORKDIR` (≥100 GB free, durable) and `REPO` (this clone), `JAVA_HOME` (JDK 11+/21). Then, in order:
 `scripts/run_gliner_large.py` → build corpus + BM25 index (`bm25/build_bm25_ctx_passages.py` +
 `pyserini.index.lucene`) → `scripts/encode_passages.py`/`encode_questions.py` →
 `scripts/dense_search.py`/`dense_eval.py` → `scripts/build_train_data.py`/`train_dpr.py` →
