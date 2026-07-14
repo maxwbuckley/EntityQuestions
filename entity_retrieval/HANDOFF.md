@@ -11,10 +11,11 @@ On entity questions, dense retrieval (DPR) underperforms BM25 mainly because it 
 the right entity's passages out of 21M**, not because it ranks badly. If you hard-constrain the
 candidate set to passages that *mention the named entity* (via the positional inverted index) and
 then rank with DPR, dense ranking is suddenly good. Fusing that entity-constrained list with the
-global dense nearest-neighbors via RRF beats BM25 on person questions — modestly with zero-shot DPR
-(top-20 72.7 vs 71.2) and clearly with fine-tuned DPR (82.4 vs 71.2). The cleanest, most defensible
-contribution is the **diagnosis** (retrieval-failure vs ranking-failure); the method is the
-application of that diagnosis.
+global dense nearest-neighbors via RRF beats BM25 on person questions (top-20 72.8 zero-shot, 82.8
+fine-tuned, vs 71.2). **However** (§7/§7b) a plain BM25⊕DPR hybrid with *no* entity filter already
+matches that on both encoders — because BM25 supplies the same entity precision — so the *method* is
+largely subsumed by standard hybrid retrieval. The cleanest, most defensible contribution is therefore
+the **diagnosis** (retrieval-failure vs ranking-failure), not the entity-constrained retriever.
 
 ## Do this FIRST (before running anything else)
 
@@ -39,14 +40,15 @@ recovers it,"** not "a new retriever."
 
 ## Prioritized experiment checklist
 
-1. **[DONE — see README §7] Generic hybrid baseline: BM25 ⊕ global-DPR, NO entity filter.**
-   Run in `scripts/hybrid_fusion.py` (fine-tuned encoder, full person subset). **The plain hybrid
-   already gets 82.0 top-20; the entity-constrained fusion gets 82.8 (+0.8).** So on the fine-tuned
-   encoder the entity filter is *not* the main driver — hybridization is — and its real value is a
-   low-k precision edge (+1.9 top-1). The **new** highest-value experiment is the same table on the
-   **zero-shot NQ encoder**, where the dense arm is weak on entities (41.1 vs 74.7 top-20) and the
-   entity filter should help much more: `hybrid_fusion.py 0 nq` once NQ passages are re-encoded. That
-   comparison is now the paper's central claim.
+1. **[DONE on BOTH encoders — see README §7/§7b] Generic hybrid baseline: BM25 ⊕ global-DPR, NO entity
+   filter.** `scripts/hybrid_fusion.py`, full person subset. **The plain hybrid already matches the
+   entity-constrained method on both encoders: 82.0 vs 82.8 top-20 (fine-tuned), 72.7 vs 72.8 (zero-shot
+   NQ).** We expected the filter to help more on the weak encoder; it did not (+0.1 top-20 on NQ). The
+   reason is that **BM25 is a better entity-precision signal than name-filtering dense vectors** (BM25
+   71.2 vs 66.2/68.9 top-20), so the method is redundant with a standard hybrid's lexical arm. Only
+   residual edge: +1.9 top-1 on the fine-tuned encoder. **New highest-value experiment:** a *three-way*
+   fusion (BM25 ⊕ global-dense ⊕ entity-filtered-dense) to see if the filter adds anything orthogonal to
+   BM25; if not, the method is a clean negative result and the paper is "diagnosis + hybrid suffices."
 2. **Generalize beyond persons.** We only filtered on people. GLiNER detects orgs/locations/works
    too; rerun `run_gliner_large.py` with labels `["person","organization","location"]` and extend
    the filter+fusion to all named entities. A method that only works for people is a workshop paper;
@@ -100,6 +102,10 @@ memory; we learned this the hard way).
 
 ## Lowest-effort, highest-value next step
 
-Run experiment #1 (generic hybrid baseline). It's ~15 min of compute, reuses everything, and it is
-the difference between "RRF beats BM25" (already known) and "the *entity constraint* beats hybrid
-RRF" (the actual claim). If that holds, you have a paper spine; if it doesn't, you've saved months.
+Experiment #1 (generic hybrid baseline) is now **done on both encoders**, and it did *not* hold — a
+plain hybrid matches the entity-constrained method, so the method is subsumed by standard hybrid
+retrieval (§7/§7b). The next cheap, decisive step is the **three-way fusion** (BM25 ⊕ global-dense ⊕
+entity-filtered-dense): it reuses everything in `hybrid_fusion.py` (add a third arm) and settles
+whether the entity filter contributes anything *orthogonal* to BM25. If it doesn't, pivot the paper to
+"diagnosis + standard hybrid suffices," and lead with the CC-vs-RRF-by-arm-balance finding (§7b) and
+the GPU systems angle (`TODO.md`), not the entity-constrained retriever.

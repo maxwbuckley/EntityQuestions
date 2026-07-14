@@ -16,11 +16,13 @@ those with DPR vectors, and fuse that with global dense nearest-neighbors via Re
 Fusion (RRF), you get a retriever that **decisively beats BM25** on person questions — especially
 when the dense encoder is fine-tuned in-domain.
 
-> **Read §7 before quoting the headline.** A later, critical baseline (§7) shows that on the
-> fine-tuned encoder a *plain* BM25⊕DPR hybrid with **no entity filter** already reaches 82.0 top-20 —
-> so most of the gain over BM25 is ordinary hybridization, and the entity constraint adds a smaller,
-> low-k precision edge (+1.9 top-1, +0.8 top-20) rather than being the main driver. The honest
-> contribution is the **diagnosis** (§5) plus that precision edge, not "entity filtering beats BM25."
+> **Read §7 before quoting the headline.** A critical baseline (§7) shows that a *plain* BM25⊕DPR hybrid
+> with **no entity filter** already matches the entity-constrained method — on **both** encoders (82.0
+> vs 82.8 top-20 fine-tuned; 72.7 vs 72.8 zero-shot). The reason: **BM25 is already the entity-precision
+> signal**, so an entity-constrained *dense* retriever is largely redundant with standard hybrid
+> retrieval. The entity filter's only measurable edge is +1.9 top-1 on the fine-tuned encoder, and it
+> vanishes on the zero-shot one. The honest contribution is the **diagnosis** (§5: dense-alone fails to
+> *retrieve* the entity), not "entity filtering beats BM25." See §7/§7b.
 
 Everything here was run against the real DPR Wikipedia corpus (`psgs_w100`, 21,015,324 passages)
 on a single RTX 5090.
@@ -371,16 +373,64 @@ diagnosis of §5 (DPR's entity weakness is retrieval-failure, not ranking-failur
 BM25⊕DPR hybrid recovers most of it once the encoder is fine-tuned; **(3)** the entity constraint adds a
 small, consistent *low-k precision* gain on top.
 
-**The key open question this raises.** All of the above is on the **fine-tuned** encoder, whose global
-DPR is already strong on entities (74.7 top-20) — so the entity filter has little left to contribute
-because the dense model already finds the entity. On the **zero-shot NQ** encoder, global DPR was far
-weaker on this subset (41.1 top-20, §6b), so the entity filter should matter *much* more there. In other
-words **the entity constraint's marginal value is likely inversely related to the dense encoder's entity
-competence** — large when you can't fine-tune, small once you can. Testing that (the same table on the NQ
-encoder) is the obvious next run and is now the crux of the story rather than a footnote — see
-[`TODO.md`](TODO.md).
+**Does the entity filter earn its keep on a *weaker* encoder?** All of the above is on the fine-tuned
+encoder, whose dense arm is already strong on entities (74.7 top-20). The natural hypothesis: on the
+**zero-shot NQ** encoder, where global DPR is far weaker (41.1 top-20), the entity constraint should
+finally matter — its marginal value inversely related to the encoder's entity competence. §7b tests
+exactly that, on the same shared-encoder discipline. **It refutes the hypothesis.**
 
-> **Comparability note.** This table is one self-consistent run on a freshly fine-tuned encoder, so its
+### 7b. The crux, tested on the zero-shot encoder — and refuted
+
+We ran the identical comparison on the **zero-shot DPR-NQ** encoder (`hybrid_fusion.py 0 nq`), same
+shared-encoder discipline, same full person subset.
+
+**Result — full person subset (N=10,758), zero-shot DPR-NQ, one shared encoder:**
+
+| System | Fusion | Entity filter | top-1 | top-5 | top-20 | top-100 |
+|---|---|---|---|---|---|---|
+| BM25 | — | no | 41.2 | 59.8 | 71.2 | 80.2 |
+| BM25 + exact-boost | exact-match boost | lexical | 45.1 | 64.0 | 74.1 | 81.5 |
+| DPR-nq global | — | no | 15.1 | 28.2 | 41.1 | 58.0 |
+| DPR-nq name-filtered | — | yes | 35.1 | 57.4 | 66.2 | 69.5 |
+| Hybrid RRF (Bruch) | RRF | no | 37.3 | 60.1 | 72.7 | 82.4 |
+| **Hybrid CC** (Bruch, α\*=0.4) | convex comb. | no | 43.9 | 62.7 | 73.1 | 82.6 |
+| Entity RRF (ours) | RRF | yes | 37.4 | 60.5 | 72.8 | 81.9 |
+| **Entity CC** (ours, α\*=0.1) | convex comb. | yes | 37.4 | 62.0 | **73.5** | 81.4 |
+
+**The hypothesis is refuted: the entity filter still adds essentially nothing over a plain hybrid.**
+Entity-RRF − Hybrid-RRF = **+0.1 top-20, +0.1 top-1** (vs +0.8 / +1.9 on the ft encoder). Even when the
+dense arm is nearly useless (41.1), constraining it by entity name does not beat the generic BM25⊕DPR
+hybrid. The marginal value of the entity filter did **not** rise on the weak encoder.
+
+**Why — the real lesson: BM25 *is* the entity-precision signal.** A generic hybrid already contains a
+lexical arm, and BM25 is a *better* exact-entity matcher than filtering dense vectors by name, on **both**
+encoders (name-filtered dense 66.2 / 68.9 top-20 vs BM25's 71.2). So "entity-constrained dense retrieval"
+is largely **redundant with standard hybrid retrieval**: the precision it adds is precision that
+BM25-in-a-hybrid already supplies for free. The §5 diagnosis (dense-alone fails to *retrieve* the entity)
+stands; the §6 *method* is mostly subsumed by hybridization. Its only measurable residual edge is +1.9
+top-1 on the strong ft encoder — which vanishes here.
+
+**CC vs RRF flips and now favors CC.** On the weak NQ encoder **CC beats RRF** (Hybrid CC 73.1 vs 72.7;
+and 43.9 vs 37.3 at top-1) because CC's tunable α can *downweight the near-useless dense arm* (best
+α≈0.1–0.4, i.e. lean lexical), whereas rank-based RRF gives the bad arm a fixed contribution. This is
+Bruch's flexibility argument, and it bites hardest when the two arms are quality-imbalanced. The catch
+that cuts the other way: Bruch's **default α=0.8 is catastrophic here (46.8 top-20)** — it overweights the
+useless dense arm — so CC's advantage is entirely contingent on tuning α to arm quality. Net across both
+encoders: **with α tuned, CC ≥ RRF; the gap is ~0 when arms are balanced (ft) and clearly positive when
+they're imbalanced (nq).**
+
+**Bottom line of §7.** The strongest honest claims from this study: **(1)** [§5] dense retrieval's entity
+weakness is a *retrieval* failure, not a ranking one; **(2)** standard BM25⊕DPR hybrid retrieval already
+fixes most of it, on **both** a zero-shot and a fine-tuned encoder; **(3)** a bespoke entity-constrained
+dense retriever adds little beyond the hybrid, because BM25 already provides the entity precision — its
+only edge is +1.9 top-1 on a strong encoder; **(4)** convex-combination fusion earns its extra parameter
+mainly when the lexical and dense arms are quality-imbalanced, where it downweights the weak arm and beats
+RRF. The obvious untested variant that *could* still rescue the method: a **three-way** fusion
+(BM25 ⊕ global-dense ⊕ entity-filtered-dense), to check whether the name filter adds anything *orthogonal*
+to BM25 — see [`TODO.md`](TODO.md).
+
+> **Comparability note.** Each table is one self-consistent shared-encoder run (§7 fine-tuned, §7b
+> zero-shot NQ), so its
 > BM25 / DPR-full / name-filter / Entity-RRF cells differ by ≲1 pt from §6b (which used the original
 > checkpoint). §6b is kept as the previously-reported reference; this section is the fair head-to-head
 > (one encoder, all systems). CC's α is tuned on this same subset (an oracle upper bound; Bruch show one
