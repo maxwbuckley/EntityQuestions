@@ -39,21 +39,31 @@ on a single RTX 5090.
 | DPR-NQ (zero-shot) | **50.9%** | reproduces the paper's ~49.7% (DPR ≪ BM25, the paper's thesis) |
 | DPR fine-tuned on EntityQuestions train | **76.2%** | in-domain fine-tuning overtakes BM25 (paper Table 2) |
 
-**Person-question subset (questions where GLiNER detects a named person), 300-question sample
-(P106 "what kind of work does X do?"), top-k retrieval accuracy:**
+**Person-question subset — the full, honest panel (all 10,758 person questions, fine-tuned encoder,
+one shared encoder across every row so the comparison is fair). Details in §7:**
 
 | System | top-1 | top-5 | top-20 | top-100 |
 |---|---|---|---|---|
-| BM25 | 41.7 | 58.0 | 69.7 | 85.0 |
-| DPR-NQ full | 5.3 | 16.0 | 29.7 | 60.7 |
-| DPR-NQ name-filtered | 36.3 | 65.3 | 74.7 | 78.7 |
-| DPR-NQ name-filtered + global-NN **RRF** | 36.3 | 62.0 | 78.3 | 90.0 |
-| **DPR-ft full** | 55.3 | 74.7 | 88.0 | 94.0 |
-| **DPR-ft name-filtered + global-NN RRF** | **69.7** | **82.0** | **92.3** | **95.7** |
+| BM25 | 41.2 | 59.8 | 71.2 | 80.2 |
+| **BM25 + exact-name boost** (lexical only, **no dense model**) | **45.1** | **64.0** | **74.1** | **81.5** |
+| DPR-ft (global dense) | 47.9 | 64.2 | 74.7 | 84.2 |
+| DPR-ft name-filtered (entity-constrained dense) | 54.6 | 65.5 | 68.9 | 70.2 |
+| Generic hybrid BM25 ⊕ DPR-ft, **RRF** (Bruch-style, no entity filter) | 57.7 | 73.3 | 82.0 | 88.4 |
+| Entity-constrained hybrid, RRF (**ours**) | **59.6** | **75.1** | **82.8** | **88.6** |
 
-> Full-subset (all 10,757 person questions) numbers are in
-> [§6 The full picture](#6-the-full-picture-full-person-subset). The 300-sample is one easy
-> relation and overstates the name-filter; the full numbers are more sober but the ordering holds.
+Two things to read off this table before anything else:
+
+- **BM25 + exact-name boost is the cheapest win in the study: +3.9 top-1 / +2.9 top-20 over plain
+  BM25, for zero dense compute.** All it does is float passages containing the exact detected person
+  name above the rest of the BM25 list. It is *encoder-independent* — the same +2.9 shows up on the
+  zero-shot panel (§7b) — and it beats *entity-constrained dense retrieval* at top-20 (74.1 vs 68.9).
+  If you take one thing from this repo into a production lexical stack, take this.
+- **Hybridization, not the entity filter, is what beats BM25.** The plain BM25⊕DPR hybrid gets 82.0;
+  adding our entity constraint moves it to 82.8 (+0.8). See the caveat above and §7/§7b.
+
+The **300-question P106 sample** used during development appears in §5–§6; it is one easy relation
+and overstates the name-filter, so always quote the full subset above. The **zero-shot NQ encoder**
+panel of the same table is in §7b.
 
 ---
 
