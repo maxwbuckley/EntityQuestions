@@ -7,15 +7,17 @@ this is the "what next and what to watch out for" map. The actionable roadmap (t
 
 ## One-paragraph summary of the finding
 
-On entity questions, dense retrieval (DPR) underperforms BM25 mainly because it **fails to retrieve
-the right entity's passages out of 21M**, not because it ranks badly. If you hard-constrain the
-candidate set to passages that *mention the named entity* (via the positional inverted index) and
-then rank with DPR, dense ranking is suddenly good. Fusing that entity-constrained list with the
-global dense nearest-neighbors via RRF beats BM25 on person questions (top-20 72.8 zero-shot, 82.8
-fine-tuned, vs 71.2). **However** (§7/§7b) a plain BM25⊕DPR hybrid with *no* entity filter already
-matches that on both encoders — because BM25 supplies the same entity precision — so the *method* is
-largely subsumed by standard hybrid retrieval. The cleanest, most defensible contribution is therefore
-the **diagnosis** (retrieval-failure vs ranking-failure), not the entity-constrained retriever.
+**Frame it as a systems question, not a leaderboard one.** You have a semantic search engine (dense,
+exact NN) that is bad at exact/entity matches. The standard fix is to stand up a lexical engine (BM25)
+next to it and fuse. This work shows you can instead stay *inside* the dense engine: detect the entity,
+mask the dense scan with an entity->passage bitmap, and fuse the masked ranking with the global one.
+On a fine-tuned encoder that is a **statistical dead heat with the best BM25 hybrid** (83.1 vs 83.1
+top-20, p=0.89; dense alone 75.0) **with no second retrieval system**. On a zero-shot encoder it lifts
+dense 40.8 -> 72.6 (matching a plain BM25 hybrid), but there BM25 adds orthogonal signal and the 3-way
+fusion wins (76.6, p<0.001). **The unifying finding: entity mask and BM25 are redundant when the dense
+encoder is good, complementary when it isn't** — BM25 is itself an entity filter, statistically and
+computationally (block-max WAND prunes on the rarest query term, which is usually the entity token).
+The honest scope limit: *if you already operate BM25*, the mask adds little on a strong encoder.
 
 ## Do this FIRST (before running anything else)
 
@@ -102,10 +104,15 @@ memory; we learned this the hard way).
 
 ## Lowest-effort, highest-value next step
 
-Experiment #1 (generic hybrid baseline) is now **done on both encoders**, and it did *not* hold — a
-plain hybrid matches the entity-constrained method, so the method is subsumed by standard hybrid
-retrieval (§7/§7b). The next cheap, decisive step is the **three-way fusion** (BM25 ⊕ global-dense ⊕
-entity-filtered-dense): it reuses everything in `hybrid_fusion.py` (add a third arm) and settles
-whether the entity filter contributes anything *orthogonal* to BM25. If it doesn't, pivot the paper to
-"diagnosis + standard hybrid suffices," and lead with the CC-vs-RRF-by-arm-balance finding (§7b) and
-the GPU systems angle (`TODO.md`), not the entity-constrained retriever.
+The fusion panel is **done** (README §7: 13 systems, both encoders, held-out alpha, paired bootstrap;
+`scripts/hybrid_fusion.py` + `bootstrap_sig.py`). The two things that would most strengthen the claim:
+
+1. **Build the standalone entity->docid index.** The whole pitch is "no lexical engine required," but
+   our entity bitmap is currently *derived from* a Lucene positional index. Build it independently
+   (names only: no term frequencies, no norms, no scoring) and report its size against the BM25 index.
+   Until then, "no lexical engine" is demonstrated for *scoring* but asserted for *indexing*.
+2. **Fix the 12.5% zero-candidate tail** — the method's real weakness. When NER misses or the name form
+   doesn't match, the mask contributes nothing and you fall back to plain dense; BM25 degrades
+   gracefully there, the mask does not. Entity linking + Wikidata aliases instead of exact-substring.
+
+Then the fused masked-GEMM kernel (`TODO.md`), which *is* the method rather than an optimization of it.

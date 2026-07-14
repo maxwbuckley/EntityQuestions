@@ -1,28 +1,32 @@
-# Entity-Centric Retrieval: Reproducing EntityQuestions and Beating BM25 with Entity-Constrained Deep Hybrid Retrieval
+# Fixing a Semantic Search Engine's Exact-Match Weakness — Without Adding a Lexical Engine
 
 This directory documents an end-to-end study built on top of the
 [EntityQuestions](https://arxiv.org/pdf/2109.08535.pdf) dataset (Sciavolino et al., EMNLP 2021).
 It starts by **reproducing the paper's central result** — that BM25 beats dense retrieval (DPR)
-on simple entity-centric questions — and then asks a follow-up question:
+on simple entity-centric questions — and then asks the question a practitioner actually faces:
 
-> DPR is bad at entity questions. Is that because its vectors *rank* badly, or because it
-> *retrieves the wrong entity* out of 21M passages? And if it's the latter, can we fix it by
-> hard-constraining retrieval to passages that actually mention the entity?
+> You are running a **semantic search engine** (dense embeddings, exact nearest-neighbor search). It
+> is great at paraphrase and **terrible at exact matches** — ask it about a named person and it
+> retrieves passages about the wrong one. **What is the cheapest thing you can add to fix that?**
 
-The answer turns out to be a clean, useful finding: **DPR's weakness on entity questions is
-mostly a retrieval (recall) problem, not a ranking problem.** If you hard-filter the corpus to
-passages that mention the question's named entity (using the inverted index), then rank only
-those with DPR vectors, and fuse that with global dense nearest-neighbors via Reciprocal Rank
-Fusion (RRF), you get a retriever that **decisively beats BM25** on person questions — especially
-when the dense encoder is fine-tuned in-domain.
+The textbook answer is *"bolt on BM25"* — stand up a whole second retrieval engine and fuse the two
+ranked lists (Bruch et al.). This study measures an alternative that never leaves the dense engine:
+**detect the entity in the query, use an entity→passage bitmap to mask the dense scan, and fuse the
+masked ranking with the global one.** Same embeddings, same GEMM, no lexical scoring path.
 
-> **Read §7 before quoting the headline.** A critical baseline (§7) shows that a *plain* BM25⊕DPR hybrid
-> with **no entity filter** already matches the entity-constrained method — on **both** encoders (82.0
-> vs 82.8 top-20 fine-tuned; 72.7 vs 72.8 zero-shot). The reason: **BM25 is already the entity-precision
-> signal**, so an entity-constrained *dense* retriever is largely redundant with standard hybrid
-> retrieval. The entity filter's only measurable edge is +1.9 top-1 on the fine-tuned encoder, and it
-> vanishes on the zero-shot one. The honest contribution is the **diagnosis** (§5: dense-alone fails to
-> *retrieve* the entity), not "entity filtering beats BM25." See §7/§7b.
+**The headline result (§7), with significance tests:**
+
+> **With a good dense encoder, the entity mask completely substitutes for a lexical engine.** It takes
+> the semantic engine from **75.0 → 83.1** top-20 (+8.1) and **47.7 → 59.6** top-1 (+11.9), landing in a
+> **statistical dead heat with the best BM25 hybrid** (83.1 vs 83.1, *p*=0.89) — while adding no second
+> retrieval system. With a *weak* (zero-shot) encoder it still does most of the work (40.8 → 72.6,
+> matching a plain BM25 hybrid), but there a lexical arm adds genuinely orthogonal information and the
+> best system fuses all three arms (76.6).
+
+**The unifying finding:** the entity mask and BM25 are **redundant when the dense encoder is good, and
+complementary when it isn't** — because *BM25 is itself an entity filter*, statistically (it beats
+name-filtered dense outright) and computationally (its rarest query term usually **is** the entity
+token, which is exactly what block-max WAND prunes on).
 
 Everything here was run against the real DPR Wikipedia corpus (`psgs_w100`, 21,015,324 passages)
 on a single RTX 5090.
@@ -31,7 +35,7 @@ on a single RTX 5090.
 
 ## Headline results
 
-**Full test set (24 relations, 22,075 questions), macro-averaged top-20 retrieval accuracy:**
+**Reproduction — full test set (24 relations, 22,075 questions), macro-averaged top-20:**
 
 | Retriever | top-20 | notes |
 |---|---|---|
@@ -39,31 +43,36 @@ on a single RTX 5090.
 | DPR-NQ (zero-shot) | **50.9%** | reproduces the paper's ~49.7% (DPR ≪ BM25, the paper's thesis) |
 | DPR fine-tuned on EntityQuestions train | **76.2%** | in-domain fine-tuning overtakes BM25 (paper Table 2) |
 
-**Person-question subset — the full, honest panel (all 10,758 person questions, fine-tuned encoder,
-one shared encoder across every row so the comparison is fair). Details in §7:**
+**The main comparison (§7)** — person questions, held-out eval split (n=7,531), one shared encoder per
+panel, α tuned on a disjoint split, significance by paired bootstrap. Grouped by *what infrastructure
+each system requires*:
 
-| System | top-1 | top-5 | top-20 | top-100 |
-|---|---|---|---|---|
-| BM25 | 41.2 | 59.8 | 71.2 | 80.2 |
-| **BM25 + exact-name boost** (lexical only, **no dense model**) | **45.1** | **64.0** | **74.1** | **81.5** |
-| DPR-ft (global dense) | 47.9 | 64.2 | 74.7 | 84.2 |
-| DPR-ft name-filtered (entity-constrained dense) | 54.6 | 65.5 | 68.9 | 70.2 |
-| Generic hybrid BM25 ⊕ DPR-ft, **RRF** (Bruch-style, no entity filter) | 57.7 | 73.3 | 82.0 | 88.4 |
-| Entity-constrained hybrid, RRF (**ours**) | **59.6** | **75.1** | **82.8** | **88.6** |
+| System | ft top-20 | zero-shot top-20 | needs a lexical engine? |
+|---|---|---|---|
+| Dense global — *the engine you start with* | 75.0 | 40.8 | **no** |
+| Entity-masked dense, alone | 68.6 | 65.7 | **no** |
+| **Entity-masked ⊕ global dense (ours)** | **83.1** | **72.6** | **no** |
+| BM25 | 70.8 | 70.8 | yes |
+| BM25 + exact-name boost | 73.9 | 73.9 | yes |
+| BM25 ⊕ dense, RRF (Bruch hybrid) | 82.2 | 72.4 | yes |
+| BM25 + exact-boost ⊕ dense, RRF | **83.1** | 75.0 | yes |
+| 3-way: BM25 ⊕ global ⊕ entity-masked | 82.9 | **76.6** | yes |
 
-Two things to read off this table before anything else:
+Three things to read off this table:
 
-- **BM25 + exact-name boost is the cheapest win in the study: +3.9 top-1 / +2.9 top-20 over plain
-  BM25, for zero dense compute.** All it does is float passages containing the exact detected person
-  name above the rest of the BM25 list. It is *encoder-independent* — the same +2.9 shows up on the
-  zero-shot panel (§7b) — and it beats *entity-constrained dense retrieval* at top-20 (74.1 vs 68.9).
-  If you take one thing from this repo into a production lexical stack, take this.
-- **Hybridization, not the entity filter, is what beats BM25.** The plain BM25⊕DPR hybrid gets 82.0;
-  adding our entity constraint moves it to 82.8 (+0.8). See the caveat above and §7/§7b.
+- **Ours ties the best lexical hybrid on the fine-tuned encoder** (83.1 vs 83.1, *p*=0.89) with no BM25
+  anywhere in the system — and adding BM25 on top of it (3-way, 82.9) buys nothing (*p*=0.38).
+- **On a weak encoder the arms decorrelate:** the 3-way fusion is the best system in the study (76.6,
+  *p*<0.001 over the next best). A weak dense arm makes the entity mask and BM25 complementary.
+- **BM25 + exact-name boost is the cheapest win here** (+3.0 top-20 over BM25, *p*<0.001, no dense
+  compute at all): float passages containing the detected name to the top of the BM25 list. If you run
+  a lexical stack and take one thing from this repo, take this.
 
-The **300-question P106 sample** used during development appears in §5–§6; it is one easy relation
-and overstates the name-filter, so always quote the full subset above. The **zero-shot NQ encoder**
-panel of the same table is in §7b.
+**Do not copy Bruch's α=0.8 across encoders:** on the weak dense arm it collapses to **46.7** top-20,
+versus **72.4** for parameter-free RRF. See §7.
+
+The **300-question P106 sample** used during development appears in §5–§6; it is one easy relation and
+overstates the name-filter, so quote §7's numbers, not those.
 
 ---
 
@@ -307,9 +316,10 @@ numbers below (all 10,757 person questions) are the ones to trust._
 - **RRF beats BM25 even with zero-shot DPR** (72.7 vs 71.2 top-20; 81.9 vs 80.2 top-100) — the
   global-NN arm rescues the ~12.7% zero-candidate questions that sink the name-filter alone (65.8).
 - **With fine-tuned DPR, RRF dominates everything** — 82.4 top-20 (+11.2 over BM25), best at every k.
-  _(But see §7: a plain BM25⊕DPR hybrid with no entity filter also reaches ~82 top-20, so most of that
-  +11.2 is hybridization, not the entity constraint. The entity filter's real contribution is a low-k
-  precision edge.)_
+  _(§7 shows a plain BM25⊕DPR hybrid reaches the same place, so this is **not** evidence that the
+  entity constraint beats hybridization. The right reading of §7 is that the entity mask is an
+  **alternative** to a lexical engine — it buys the whole hybrid gain without one — not that it beats
+  BM25 at BM25's own game.)_
 - **The name filter contributes precision the dense model lacks:** at top-1 it beats full dense
   retrieval for both encoders (NQ 15.1→35.3; ft 47.9→55.0), and the fusion improves on both
   (ft top-1: full 47.9 → filtered 55.0 → fused 60.0).
@@ -321,132 +331,202 @@ numbers below (all 10,757 person questions) are the ones to trust._
 
 ---
 
-## 7. The critical baseline: is it the *entity constraint*, or just hybridization? (Bruch et al.)
+## 7. The question this study is actually answering
 
-**Why this section exists.** Sections 5–6 fuse an entity-filtered dense list with global dense
-nearest-neighbors and beat BM25. But there is an obvious confound: **maybe any lexical⊕dense hybrid
-does that**, and the entity filter adds nothing beyond ordinary hybridization. The only way to know is
-to build the standard hybrid — BM25 ⊕ dense — and compare, *on the same encoder*. This is the
-experiment [`HANDOFF.md`](HANDOFF.md) flagged as **CRITICAL**: "until this is run the headline claim is
-not defensible." Here it is.
+**The premise.** You are building a **semantic search engine** — dense embeddings, exact
+nearest-neighbor search over the whole corpus. It is excellent at paraphrase and terrible at exact
+matches: ask it a question about a specific named entity and it retrieves passages about the wrong
+person entirely (§5: DPR-nq gets **40.8** top-20 where BM25 gets 70.8). **What is the cheapest thing
+you can add to fix that?**
 
-The reference for hybrid fusion is **Bruch, Gai & Ingber, "An Analysis of Fusion Functions for Hybrid
-Retrieval"** (arXiv [2210.11934](https://arxiv.org/abs/2210.11934), ACM TOIS 2023). They fuse a lexical
-ranking (BM25) and a semantic ranking (dense) two ways:
+There are two families of answer, and they cost very different things to operate:
 
-- **Reciprocal Rank Fusion (RRF):** `f = 1/(η + π_Lex) + 1/(η + π_Sem)` (rank-based; η=60).
-- **Convex Combination (CC):** `f = α·φ_Sem(s_Sem) + (1−α)·φ_Lex(s_Lex)`, where φ is per-query
+- **Add a lexical engine** (the standard hybrid; Bruch et al.) — stand up BM25/Lucene next to your
+  vector index, run both, fuse the two ranked lists. A second retrieval system to build, host, tune
+  and keep in sync.
+- **Stay inside the dense engine** (this work) — detect the entity in the query, use an
+  entity→passage bitmap to *mask* the dense scan, and fuse the masked ranking with the global one.
+  Same embeddings, same GEMM, no lexical scoring path.
+
+§7 measures both, on one shared encoder, with significance tests. The answer depends on how good
+your dense encoder already is — and that dependence is the main finding.
+
+### The reference: Bruch's fusion functions
+
+**Bruch, Gai & Ingber, "An Analysis of Fusion Functions for Hybrid Retrieval"**
+(arXiv [2210.11934](https://arxiv.org/abs/2210.11934), ACM TOIS 2023) fuse a lexical ranking (BM25)
+and a semantic ranking (dense) two ways:
+
+- **Reciprocal Rank Fusion (RRF):** `f = Σᵢ 1/(η + πᵢ)` — rank-based, parameter-free in practice (η=60).
+- **Convex Combination (CC):** `f = α·φ_Sem(s_Sem) + (1−α)·φ_Lex(s_Lex)`, with φ per-query
   **min-max normalization** `φ(s)=(s−m_q)/(M_q−m_q)` (their TM2C2 uses theoretical bounds: BM25 inf=0,
-  cosine inf=−1). Their findings: **CC > RRF in- and out-of-domain, RRF is η-sensitive, and CC is
-  normalization-agnostic and sample-efficient**, with α≈0.8 a good default.
+  cosine inf=−1). They find **CC > RRF in- and out-of-domain**, RRF is η-sensitive, CC is
+  normalization-agnostic and sample-efficient, and α≈0.8 is a good default.
 
-We add all of these, **computed on the single fine-tuned DPR encoder** so nothing is confounded by
-encoder differences (`scripts/hybrid_fusion.py`). For the two CC systems we sweep α∈{0.1,…,0.9} and
-report the best top-20 operating point (the full α-curve is logged).
+We implement both, plus two entity-aware systems of our own, all in
+[`scripts/hybrid_fusion.py`](scripts/hybrid_fusion.py).
 
-**Result — full person subset (N=10,758), fine-tuned DPR, one shared encoder:**
+### The systems
 
-| System | Fusion | Entity filter | top-1 | top-5 | top-20 | top-100 |
-|---|---|---|---|---|---|---|
-| BM25 | — | no | 41.2 | 59.8 | 71.2 | 80.2 |
-| BM25 + exact-boost | exact-match boost | lexical | 45.1 | 64.0 | 74.1 | 81.5 |
-| DPR-ft global | — | no | 47.9 | 64.2 | 74.7 | 84.2 |
-| DPR-ft name-filtered | — | yes | 54.6 | 65.5 | 68.9 | 70.2 |
-| **Hybrid RRF** (Bruch) | RRF | **no** | 57.7 | 73.3 | **82.0** | 88.4 |
-| **Hybrid CC** (Bruch, α\*=0.5) | convex comb. | **no** | 59.4 | 73.6 | 81.9 | 87.9 |
-| **Entity RRF** (ours, §6) | RRF | **yes** | 59.6 | 75.1 | **82.8** | 88.6 |
-| **Entity CC** (ours, α\*=0.5) | convex comb. | **yes** | 59.8 | 74.7 | 82.2 | 88.0 |
+| System | Lexical arm | Dense arm(s) | Needs a lexical engine? |
+|---|---|---|---|
+| `bm25` | BM25 | — | yes |
+| `bm25_exact` | BM25, **exact-name matches floated to the top** | — | yes |
+| `dpr_full` | — | global dense | **no** |
+| `dpr_filt` | — | entity-masked dense | **no** |
+| `hyb_*` (Bruch) | BM25 | global dense | yes |
+| `hybx_*` | BM25 + exact-boost | global dense | yes |
+| **`ent_*` (ours)** | — | **entity-masked ⊕ global dense** | **no** |
+| `tri_rrf` | BM25 | global ⊕ entity-masked dense | yes |
 
-**The honest headline: on the fine-tuned encoder, hybridization explains almost all of the gain over
-BM25, and the entity constraint adds only a small low-k edge.**
+The **exact-name boost** is a three-line lexical trick: partition the BM25 top-k into passages that
+literally contain the detected entity name and those that don't, and put the former first (BM25 order
+preserved within each group). For CC it has a score-space form that induces exactly the same ranking
+(see `boosted_lex_score()`), so it adds no hyperparameter.
 
-- **Generic hybrid already gets 82.0 top-20** (BM25 71.2 → 82.0, **+10.8**), with *no entity filter at
-  all*. Our entity-constrained fusion gets 82.8 — a further **+0.8**. So the entity constraint is **not**
-  the main driver here; ordinary BM25⊕DPR hybridization is.
-- **Where the entity filter helps is precision (low k):** Entity-RRF − Hybrid-RRF is **+1.9 top-1,
-  +1.8 top-5, +0.8 top-20, +0.2 top-100.** The exact-entity constraint removes near-miss distractors at
-  the very top of the ranking; by top-100 the global dense arm already has recall covered, so the gap
-  closes. A real but modest *ranking-precision* effect, not a recall one.
-- **CC vs RRF (contra Bruch):** here **RRF ≥ CC** for both the generic and entity hybrids (82.0 vs 81.9;
-  82.8 vs 82.2). CC only matches RRF after tuning α down to ≈0.5 — Bruch's α=0.8 default is worse on this
-  data (top-20 ≈ 78; see the logged α-curve). Bruch established CC>RRF on web/BEIR retrieval; on this
-  narrow entity-QA distribution with a strong fine-tuned dense arm, rank-based RRF is at least as good
-  and CC's optimal mixing weight shifts toward the lexical/precision arm. The α-curve is flat near its
-  peak (0.4–0.6 within ~1 pt), so CC isn't fragile — it just doesn't win here.
-- **exact-match-boosted BM25** (a lexical-only entity signal) lifts BM25 71.2 → 74.1 top-20 and 41.2 →
-  45.1 top-1 — cheap and real, but far below any hybrid.
+**Protocol.** One shared encoder per panel (so nothing is confounded by encoder differences); the
+person subset is split 30/70 into **tune / eval**, CC's α is chosen on **tune** and every system is
+reported on the disjoint **eval** split (N=7,531); `PYTHONHASHSEED=0` for bit-exact fusion tie-breaks;
+significance by **paired bootstrap** over questions (B=10,000). RRF has no free parameter, so scoring
+CC at its best-on-the-test-set α — which an earlier version of this study did — is an oracle that
+silently favors CC. (In the event, held-out α picked the *same* value as the oracle in all six cases,
+so the inflation here was **+0.0**; the flaw was real but empirically inert. Both are logged.)
 
-**What this means (reframing).** The §6 claim "entity-constrained RRF beats BM25 (≈82 vs 71)" is *true*,
-but this baseline shows a plain hybrid gets there too — so the earlier framing credited the entity filter
-for gains that mostly belong to hybridization. The defensible contributions are now: **(1)** the
-diagnosis of §5 (DPR's entity weakness is retrieval-failure, not ranking-failure); **(2)** a plain
-BM25⊕DPR hybrid recovers most of it once the encoder is fine-tuned; **(3)** the entity constraint adds a
-small, consistent *low-k precision* gain on top.
+### Result 1 — fine-tuned encoder (in-domain dense arm)
 
-**Does the entity filter earn its keep on a *weaker* encoder?** All of the above is on the fine-tuned
-encoder, whose dense arm is already strong on entities (74.7 top-20). The natural hypothesis: on the
-**zero-shot NQ** encoder, where global DPR is far weaker (41.1 top-20), the entity constraint should
-finally matter — its marginal value inversely related to the encoder's entity competence. §7b tests
-exactly that, on the same shared-encoder discipline. **It refutes the hypothesis.**
+| System | top-1 | top-5 | top-20 | top-100 | lexical engine? |
+|---|---|---|---|---|---|
+| BM25 | 40.7 | 59.5 | 70.8 | 80.0 | yes |
+| BM25 + exact-boost | 44.7 | 63.7 | 73.9 | 81.3 | yes |
+| **DPR-ft global** — *the engine you start with* | 47.7 | 64.7 | **75.0** | 84.3 | **no** |
+| DPR-ft entity-masked, alone | 54.3 | 65.1 | 68.6 | 69.8 | **no** |
+| Hybrid RRF (Bruch) | 57.3 | 73.2 | 82.2 | 88.6 | yes |
+| Hybrid CC (Bruch, α=0.8 default) | 54.1 | 68.8 | 78.2 | 85.9 | yes |
+| Hybrid CC (α=0.5, held-out) | 59.4 | 73.4 | 82.1 | 88.1 | yes |
+| Hybrid + exact-boost, RRF | 58.6 | 74.0 | **83.1** | 88.9 | yes |
+| Hybrid + exact-boost, CC (α=0.5) | **61.0** | 75.1 | **83.1** | 88.4 | yes |
+| **Entity-masked ⊕ global, RRF (ours)** | 59.6 | **75.2** | **83.1** | 88.8 | **no** |
+| Entity-masked ⊕ global, CC (α=0.5) | 59.6 | 74.8 | 82.5 | 88.2 | **no** |
+| 3-way RRF (BM25 ⊕ global ⊕ masked) | 59.5 | 74.7 | 82.9 | 89.0 | yes |
 
-### 7b. The crux, tested on the zero-shot encoder — and refuted
+**With a good dense encoder, the entity mask completely substitutes for a lexical engine.**
 
-We ran the identical comparison on the **zero-shot DPR-NQ** encoder (`hybrid_fusion.py 0 nq`), same
-shared-encoder discipline, same full person subset.
+| Paired bootstrap, top-20, n=7,531 | Δ | 95% CI | p |
+|---|---|---|---|
+| entity-masked (ours) **vs dense alone** | **+8.07** | [+7.38, +8.78] | <0.001 |
+| entity-masked (ours) vs plain BM25 hybrid | +0.94 | [+0.44, +1.43] | <0.001 |
+| **BM25+exact hybrid vs entity-masked (ours)** | **+0.04** | [−0.40, +0.49] | **0.89 — n.s.** |
+| 3-way vs entity-masked | −0.21 | [−0.66, +0.24] | 0.38 — n.s. |
 
-**Result — full person subset (N=10,758), zero-shot DPR-NQ, one shared encoder:**
+The entity mask takes the semantic engine from **75.0 → 83.1 top-20 (+8.1)** and from **47.7 → 59.6
+top-1 (+11.9)** — and lands in a **statistical dead heat with the best lexical hybrid** (83.1 vs 83.1,
+p=0.89), while never leaving the dense engine. Adding BM25 *on top* of it (the 3-way row) buys nothing.
 
-| System | Fusion | Entity filter | top-1 | top-5 | top-20 | top-100 |
-|---|---|---|---|---|---|---|
-| BM25 | — | no | 41.2 | 59.8 | 71.2 | 80.2 |
-| BM25 + exact-boost | exact-match boost | lexical | 45.1 | 64.0 | 74.1 | 81.5 |
-| DPR-nq global | — | no | 15.1 | 28.2 | 41.1 | 58.0 |
-| DPR-nq name-filtered | — | yes | 35.1 | 57.4 | 66.2 | 69.5 |
-| Hybrid RRF (Bruch) | RRF | no | 37.3 | 60.1 | 72.7 | 82.4 |
-| **Hybrid CC** (Bruch, α\*=0.4) | convex comb. | no | 43.9 | 62.7 | 73.1 | 82.6 |
-| Entity RRF (ours) | RRF | yes | 37.4 | 60.5 | 72.8 | 81.9 |
-| **Entity CC** (ours, α\*=0.1) | convex comb. | yes | 37.4 | 62.0 | **73.5** | 81.4 |
+### Result 2 — zero-shot NQ encoder (weak dense arm)
 
-**The hypothesis is refuted: the entity filter still adds essentially nothing over a plain hybrid.**
-Entity-RRF − Hybrid-RRF = **+0.1 top-20, +0.1 top-1** (vs +0.8 / +1.9 on the ft encoder). Even when the
-dense arm is nearly useless (41.1), constraining it by entity name does not beat the generic BM25⊕DPR
-hybrid. The marginal value of the entity filter did **not** rise on the weak encoder.
+| System | top-1 | top-5 | top-20 | top-100 | lexical engine? |
+|---|---|---|---|---|---|
+| BM25 | 40.7 | 59.5 | 70.8 | 80.0 | yes |
+| BM25 + exact-boost | 44.7 | 63.7 | 73.9 | 81.3 | yes |
+| **DPR-nq global** — *the engine you start with* | 15.0 | 28.0 | **40.8** | 57.8 | **no** |
+| DPR-nq entity-masked, alone | 34.7 | 57.2 | 65.7 | 69.1 | **no** |
+| Hybrid RRF (Bruch) | 36.7 | 59.5 | 72.4 | 82.3 | yes |
+| Hybrid CC (Bruch, α=0.8 default) | 19.3 | 33.5 | **46.7** | 62.8 | yes |
+| Hybrid CC (α=0.4, held-out) | 43.3 | 62.4 | 72.8 | 82.4 | yes |
+| Hybrid + exact-boost, RRF | 37.7 | 61.9 | 75.0 | 83.6 | yes |
+| Hybrid + exact-boost, CC (α=0.4) | 44.2 | 65.1 | 75.5 | 83.2 | yes |
+| **Entity-masked ⊕ global, RRF (ours)** | 37.3 | 60.2 | 72.6 | 81.9 | **no** |
+| Entity-masked ⊕ global, CC (α=0.1) | 37.3 | 61.8 | 73.3 | 81.4 | **no** |
+| **3-way RRF (BM25 ⊕ global ⊕ masked)** | 43.9 | **66.2** | **76.6** | 84.1 | yes |
 
-**Why — the real lesson: BM25 *is* the entity-precision signal.** A generic hybrid already contains a
-lexical arm, and BM25 is a *better* exact-entity matcher than filtering dense vectors by name, on **both**
-encoders (name-filtered dense 66.2 / 68.9 top-20 vs BM25's 71.2). So "entity-constrained dense retrieval"
-is largely **redundant with standard hybrid retrieval**: the precision it adds is precision that
-BM25-in-a-hybrid already supplies for free. The §5 diagnosis (dense-alone fails to *retrieve* the entity)
-stands; the §6 *method* is mostly subsumed by hybridization. Its only measurable residual edge is +1.9
-top-1 on the strong ft encoder — which vanishes here.
+| Paired bootstrap, top-20, n=7,531 | Δ | 95% CI | p |
+|---|---|---|---|
+| entity-masked (ours) **vs dense alone** | **+31.79** | [+30.70, +32.88] | <0.001 |
+| entity-masked (ours) vs plain BM25 hybrid | +0.17 | [−0.52, +0.88] | 0.67 — n.s. |
+| BM25+exact hybrid vs entity-masked (ours) | +2.38 | [+1.75, +3.01] | <0.001 |
+| **3-way vs BM25+exact hybrid** | **+1.63** | [+1.23, +2.04] | <0.001 |
 
-**CC vs RRF flips and now favors CC.** On the weak NQ encoder **CC beats RRF** (Hybrid CC 73.1 vs 72.7;
-and 43.9 vs 37.3 at top-1) because CC's tunable α can *downweight the near-useless dense arm* (best
-α≈0.1–0.4, i.e. lean lexical), whereas rank-based RRF gives the bad arm a fixed contribution. This is
-Bruch's flexibility argument, and it bites hardest when the two arms are quality-imbalanced. The catch
-that cuts the other way: Bruch's **default α=0.8 is catastrophic here (46.8 top-20)** — it overweights the
-useless dense arm — so CC's advantage is entirely contingent on tuning α to arm quality. Net across both
-encoders: **with α tuned, CC ≥ RRF; the gap is ~0 when arms are balanced (ft) and clearly positive when
-they're imbalanced (nq).**
+**With a weak dense encoder the mask still does most of the work — but a lexical arm now adds real,
+orthogonal information.** The mask lifts the engine **40.8 → 72.6 (+31.8)**, which *ties* a plain BM25
+hybrid (72.4, p=0.67) — a semantic engine plus a bitmap matching a full lexical⊕semantic hybrid. But
+here, unlike the fine-tuned case, adding BM25 on top helps: the **3-way fusion is the best system in
+the study (76.6)**, significantly beating every 2-way (+1.63 over the next best).
 
-**Bottom line of §7.** The strongest honest claims from this study: **(1)** [§5] dense retrieval's entity
-weakness is a *retrieval* failure, not a ranking one; **(2)** standard BM25⊕DPR hybrid retrieval already
-fixes most of it, on **both** a zero-shot and a fine-tuned encoder; **(3)** a bespoke entity-constrained
-dense retriever adds little beyond the hybrid, because BM25 already provides the entity precision — its
-only edge is +1.9 top-1 on a strong encoder; **(4)** convex-combination fusion earns its extra parameter
-mainly when the lexical and dense arms are quality-imbalanced, where it downweights the weak arm and beats
-RRF. The obvious untested variant that *could* still rescue the method: a **three-way** fusion
-(BM25 ⊕ global-dense ⊕ entity-filtered-dense), to check whether the name filter adds anything *orthogonal*
-to BM25 — see [`TODO.md`](TODO.md).
+### The unifying finding
 
-> **Comparability note.** Each table is one self-consistent shared-encoder run (§7 fine-tuned, §7b
-> zero-shot NQ), so its
-> BM25 / DPR-full / name-filter / Entity-RRF cells differ by ≲1 pt from §6b (which used the original
-> checkpoint). §6b is kept as the previously-reported reference; this section is the fair head-to-head
-> (one encoder, all systems). CC's α is tuned on this same subset (an oracle upper bound; Bruch show one
-> held-out α transfers, so a clean split would cost little — flagged in `TODO.md`). Fusion tie-breaks
-> are Python hash-order dependent, so individual cells move ≤0.1 pt run-to-run (set `PYTHONHASHSEED`
-> for bit-exact repro); this doesn't affect any comparison here.
+**The entity mask and BM25 are redundant when the dense encoder is good, and complementary when it
+isn't.**
+
+- Fine-tuned arm (strong): mask ≡ BM25 hybrid (p=0.89), and 3-way adds nothing (p=0.38).
+- Zero-shot arm (weak): mask ≡ plain BM25 hybrid (p=0.67), but 3-way beats both (p<0.001).
+
+The reason is that **BM25 is itself an entity filter** — statistically *and* computationally. It beats
+name-filtered dense retrieval outright (70.8 vs 68.6 / 65.7 top-20), and, as the cost model below
+shows, its rarest query term usually *is* the entity token. When the dense arm is strong enough to
+exploit the entity signal too, the mask and BM25 are two routes to the same information. When the
+dense arm is weak, they decorrelate and stack.
+
+### Cost model: what each arm actually touches
+
+Measured on 300 person questions against the real 21M-passage index:
+
+| Per query | Postings / vectors touched | of corpus |
+|---|---|---|
+| BM25 arm, naive disjunctive (union of query-term postings) | 4,217,681 (median) | 20.1% |
+| BM25 arm, block-max WAND floor (rarest term's postings) | 706 (median) | 0.003% |
+| **Entity bitmap (ours)** | ~1,000 capped; **118 verified** (mean) | 0.005% |
+| Global dense arm (**both** methods pay this**)** | 21,015,324 vectors | 100% |
+| Entity-masked dense arm | **118** vectors | 0.0006% |
+
+Two honest readings of this table:
+
+- **We cannot claim a lexical-side speedup.** The rarest term in *"what kind of work does Yehuda
+  Amichai do"* **is the entity token**, so a block-max WAND implementation already prunes to roughly
+  the same ~10³ documents our bitmap selects. The bitmap largely re-derives what WAND's rarest-term
+  pruning does for free. This is the *same* finding as the accuracy result, reached from a different
+  direction.
+- **The dense arm dominates, and neither method escapes it.** The masked arm is ~178,000× cheaper than
+  the global scan (118 vs 21M vectors) — but it's a rounding error beside a global scan we still need,
+  since the masked arm *alone* is worse than BM25 (68.6 / 65.7 vs 70.8). The saving is not in FLOPs; it
+  is in **not operating a second retrieval system**.
+
+This is a cost *model* from measured postings/vector counts — **not** a latency benchmark. No speedup
+is claimed until it is measured end-to-end with proper replication.
+
+### CC vs RRF (what we can say about Bruch's claim)
+
+- **Untuned, RRF wins.** At a fixed α=0.5, CC loses to RRF on both encoders (ft 82.1 vs 82.2; nq 72.0
+  vs 72.4). RRF is parameter-free; CC has to be tuned to compete.
+- **Tuned, CC wins only when the arms are quality-imbalanced.** On the weak nq encoder, tuned CC beats
+  RRF at low k (top-1 **43.3 vs 36.7**) because α can downweight the near-useless dense arm (α*≈0.1–0.4).
+  On the balanced ft encoder the two tie (α*=0.5).
+- **Bruch's default α=0.8 is catastrophic on a weak dense arm: 46.7 top-20 vs RRF's 72.4.** The single
+  most transferable warning in this study is *do not copy a fusion hyperparameter across encoders* —
+  α must track the relative quality of the arms.
+- The α-curve is flat near its peak (0.4–0.6 within ~1 pt on ft), so tuned CC isn't fragile; it simply
+  doesn't earn its parameter unless the arms are lopsided.
+
+### Scope limits (read before quoting any of this)
+
+- **If you already run BM25, the entity mask is redundant** on a strong encoder (+0.9 top-20 over a
+  plain hybrid, and 0.0 vs an exact-boosted one). This work is for people who *don't* want a lexical
+  engine, or whose dense arm is weak enough that the 3-way fusion pays.
+- **The mask is not free: it needs query-side NER** (GLiNER, tens of ms) **and a passage-side
+  entity→docid index.** That index is much lighter than a full BM25 index (names only; no term
+  frequencies, no norms, no scoring machinery) — but ours was *built from* a Lucene positional index,
+  so the standalone version is asserted, not demonstrated.
+- **The mask fails silently on 12.5% of questions** (no candidate passage: NER miss, alias, regnal or
+  partial name). There it contributes nothing and you fall back to plain dense. BM25 degrades
+  gracefully in those cases; the mask does not. This is the method's real weakness and the first thing
+  to fix (see [`TODO.md`](TODO.md)).
+- Person entities only, one dataset, one corpus. The fine-tuned encoder is trained on *our*
+  distant-supervision data, not the paper's exact setup.
+
+> **Comparability note.** §7's tables are the eval split (n=7,531) of one bit-reproducible run per
+> encoder; §6/§6b report the full subset (N=10,758) from earlier runs, so cells differ by ≲1 pt. §7 is
+> the fair head-to-head (one encoder, all systems, same questions, significance tested) and is the one
+> to quote. Per-question first-hit ranks are dumped to `hybrid_{ft,nq}_firsthit.npz`, so any further
+> statistic (per-relation CIs, other splits) costs no GPU time.
 
 ---
 
@@ -454,7 +534,12 @@ to BM25 — see [`TODO.md`](TODO.md).
 
 - **The 300-sample is all P106** (alphabetically first relation), which is favorable for the name
   filter (the subject's own passage reliably contains both the name and the occupation answer).
-  Full-subset numbers (§6b) are the ones to trust.
+  §7's held-out numbers are the ones to trust.
+- **The entity mask needs query-side NER and a passage-side entity index.** It is not free, and our
+  entity index was built *from* a Lucene positional index — so "no lexical engine needed" is
+  demonstrated for *scoring*, but the standalone entity-index build is asserted, not demonstrated.
+- **The cost model in §7 is a model, not a benchmark.** No latency claim is made; a block-max WAND
+  BM25 likely prunes to the same order of magnitude as our bitmap.
 - **Throughput figures are observed from the actual runs, not controlled benchmarks** (no warmup /
   replication / variance control). Encoding was partly CPU-tokenization-bound, so the GPU was not
   fully exercised.
@@ -479,7 +564,9 @@ to BM25 — see [`TODO.md`](TODO.md).
 | `filtered_dpr.py` | §5 | entity-constrained dense retrieval |
 | `fold_util.py`, `fold_shards.py` | §6 | diacritic folding + folded re-index |
 | `filtered_rrf.py` | §6 | RRF fusion (name-filter + global NN) with exact tie-break |
-| `hybrid_fusion.py` | §7 | generic hybrid (Bruch) + exact-boost + convex-combination vs RRF |
+| `hybrid_fusion.py` | §7 | all 13 systems: Bruch hybrid, exact-boost, entity-mask, 3-way; RRF vs CC; held-out alpha; per-question first-hit dump |
+| `bootstrap_sig.py` | §7 | paired bootstrap over questions (reads the first-hit dump; no GPU) |
+| `postings_cost.py` | §7 | cost model: postings/vectors each arm touches |
 | `*_driver.sh` | — | orchestration wrappers for the long-running stages |
 
 All numbers in this writeup were measured on the real 21M-passage `psgs_w100` corpus on one RTX 5090.

@@ -7,17 +7,20 @@ This is the actionable roadmap. For orientation and threats-to-validity see
 
 ## Thesis (two contributions)
 
-1. **Diagnosis (solid) + method (needs care after §7).** DPR's weakness on entity questions is a
-   *retrieval* failure, not a *ranking* failure (§5). Hard-constraining candidates to passages that
-   mention the query's named entity and fusing with global dense NN beats BM25 on person questions
-   (fine-tuned DPR 82.8 vs 71.2 top-20). **But §7's critical baseline shows a plain BM25⊕DPR hybrid
-   with no entity filter already matches it on BOTH encoders** (82.0 vs 82.8 ft; 72.7 vs 72.8 nq) —
-   because BM25 already supplies the entity precision. So the entity-constrained *method* is largely
-   subsumed by standard hybrid retrieval; its only edge is +1.9 top-1 on the strong encoder. The
-   defensible contribution is the **diagnosis** (§5), not the method. Only a three-way fusion
-   (experiment #1, NEW direction) might still give the filter an orthogonal role.
-2. **Systems contribution (to build): a fused CUDA kernel** that makes hybrid entity-filtered
-   retrieval a single GEMM. See below — this is the paper's novelty engine.
+1. **Method: fix a semantic engine's exact-match weakness *in-engine*.** The premise is a dense
+   search engine that is bad at exact/entity matches. The textbook fix is to bolt on a lexical
+   engine (BM25) and fuse. We show you don't have to: detect the entity, mask the dense scan with an
+   entity->passage bitmap, fuse masked + global dense. **With a fine-tuned encoder this is a
+   statistical dead heat with the best BM25 hybrid (83.1 vs 83.1 top-20, p=0.89) while adding no
+   second retrieval system** — dense alone is 75.0. On a zero-shot encoder it lifts 40.8 -> 72.6,
+   matching a plain BM25 hybrid; there a lexical arm *does* add orthogonal signal and the 3-way
+   fusion wins (76.6, p<0.001). **Unifying finding: the entity mask and BM25 are redundant when the
+   dense encoder is good and complementary when it isn't** — because BM25 is itself an entity filter
+   (statistically, and computationally via WAND's rarest-term pruning, which usually prunes on the
+   entity token). Scope limit, stated honestly: *if you already run BM25*, the mask adds ~nothing on
+   a strong encoder (§7).
+2. **Systems contribution (to build): a fused CUDA kernel** that makes the masked dense scan a single
+   GEMM. This is no longer a bolt-on — it *is* the method. See below.
 
 ## ⭐ Systems contribution: the fused hybrid top-k CUDA kernel
 
@@ -51,24 +54,19 @@ recall@k (exact vs approximate), and the crossover where masking beats brute for
 
 ## Experiments (prioritized)
 
-1. **[DONE — and it reshapes the paper] Generic hybrid baseline: BM25 ⊕ global-DPR, no entity filter.**
-   Run in §7 (`scripts/hybrid_fusion.py`, fine-tuned encoder, full person subset). **Result: the plain
-   hybrid already gets 82.0 top-20 (BM25 71.2 → 82.0); the entity-constrained fusion gets 82.8 — only
-   +0.8.** So on the fine-tuned encoder the entity constraint is *not* the main driver — hybridization
-   is — and the filter's real value is a low-k precision edge (+1.9 top-1, +1.8 top-5). This is exactly
-   the "saved you months" outcome flagged here: the headline is now the diagnosis + a precision edge,
-   not "entity filtering beats BM25."
-   - **[DONE — hypothesis REFUTED, see README §7b] Same table on the ZERO-SHOT NQ encoder.** We expected
-     the entity filter to help more when the dense arm is weak (NQ global DPR 41.1 vs ft 74.7). It does
-     **not**: Entity-RRF − Hybrid-RRF = **+0.1 top-20** on NQ (vs +0.8 on ft). Reason: **BM25 is already
-     the better entity-precision signal** (BM25 71.2 vs name-filtered dense 66.2/68.9 top-20), so an
-     entity-constrained *dense* retriever is redundant with a standard hybrid's lexical arm. The method
-     is largely subsumed by hybridization on both encoders.
-   - **[NEW direction that could rescue the method] Three-way fusion: BM25 ⊕ global-dense ⊕
-     entity-filtered-dense.** The 2-way results show the name filter doesn't beat BM25 as a precision
-     arm — but does it add anything *orthogonal* on top of BM25⊕dense? Add a third arm in
-     `hybrid_fusion.py` and check top-1/5 especially. If it adds nothing, the honest paper is
-     "diagnosis + standard hybrid already fixes it," and the entity filter is a negative result.
+1. **[DONE — see README §7] The full fusion panel, both encoders, held-out alpha, paired bootstrap.**
+   `scripts/hybrid_fusion.py` runs 13 systems on one shared encoder per panel; `bootstrap_sig.py` does
+   the significance tests off the per-question first-hit dump (no GPU). Settled:
+   - Entity-mask fusion **ties** the best BM25 hybrid on the fine-tuned encoder (83.1 vs 83.1, p=0.89)
+     with **no lexical engine**; 3-way adds nothing there (p=0.38).
+   - On the zero-shot encoder the **3-way fusion is the best system** (76.6; +1.63 over the next best,
+     p<0.001) — the entity mask and BM25 decorrelate when the dense arm is weak.
+   - **Exact-name boosting the BM25 arm** is a free +3.0 top-20 (p<0.001) and, inside a hybrid, +1.0.
+   - **CC vs RRF:** untuned (alpha=0.5) RRF wins on both encoders; tuned CC only wins when the arms are
+     quality-imbalanced. **Bruch's default alpha=0.8 collapses to 46.7 top-20 on the weak encoder.**
+   - Remaining: an honest test of the "no lexical engine" claim requires **building the standalone
+     entity->docid index** (ours is derived from a Lucene positional index) and a real latency benchmark.
+
 2. **Generalize beyond persons** to orgs/locations/works (GLiNER already detects them; rerun
    `run_gliner_large.py` with more labels and extend the bitset filter to any named entity).
 3. **More datasets / benchmarks:**
